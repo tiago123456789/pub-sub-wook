@@ -2,14 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/sqs"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -42,26 +44,10 @@ func notifySubscribes(urlSubscribed []URLSubscribed) {
 
 }
 
-func GetQueueURL(sess *session.Session, queue string) (*sqs.GetQueueUrlOutput, error) {
-	sqsClient := sqs.New(sess)
-
-	result, err := sqsClient.GetQueueUrl(&sqs.GetQueueUrlInput{
-		QueueName: &queue,
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
-}
-
-func SendMessage(sess *session.Session, queueUrl string, messageBody string) error {
-	sqsClient := sqs.New(sess)
-
-	_, err := sqsClient.SendMessage(&sqs.SendMessageInput{
-		QueueUrl:    &queueUrl,
-		MessageBody: aws.String(messageBody),
+func SendMessage(client *sqs.Client, queueUrl string, messageBody string) error {
+	_, err := client.SendMessage(context.TODO(), &sqs.SendMessageInput{
+		MessageBody: &messageBody,
+		QueueUrl:    aws.String(queueUrl),
 	})
 
 	return err
@@ -76,24 +62,22 @@ func main() {
 		},
 	}
 
-	sess, err := session.NewSessionWithOptions(session.Options{
-		Profile: "tiago",
-		Config: aws.Config{
-			Region:     aws.String("us-east-1"),
-			HTTPClient: httpClient,
-		},
-	})
+	cfg, err := config.LoadDefaultConfig(context.Background(),
+		config.WithSharedConfigProfile("tiago"),
+		config.WithHTTPClient(httpClient), // Use your custom HTTP client here
+	)
+	if err != nil {
+		panic("unable to load SDK config, " + err.Error())
+	}
+
+	// Create a new SQS client
+	client := sqs.NewFromConfig(cfg)
+
+	// Specify the URL of the SQS queue
+	queueURL := "https://sqs.us-east-1.amazonaws.com/507403822990/new_request_dev"
 
 	if err != nil {
 		fmt.Printf("Failed to initialize new session: %v", err)
-		return
-	}
-
-	queueName := "new_request_dev"
-
-	urlRes, err := GetQueueURL(sess, queueName)
-	if err != nil {
-		fmt.Printf("Got an error while trying to create queue: %v", err)
 		return
 	}
 
@@ -121,14 +105,15 @@ func main() {
 
 		dataJSON, _ := json.Marshal(payload)
 
-		err = SendMessage(sess, *urlRes.QueueUrl, string(dataJSON))
+		err = SendMessage(client, queueURL, string(dataJSON))
 		if err != nil {
+			log.Fatal(err)
 			return c.Status(500).JSON(fiber.Map{
 				"message": "Interval server error",
 			})
 		}
 
-		return c.Status(202).JSON(fiber.Map{})
+		return c.SendStatus(202)
 	})
 
 	app.Listen(":3000")
